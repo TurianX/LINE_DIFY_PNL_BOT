@@ -11,7 +11,6 @@
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
-    "@vercel/node": "^2.3.0",
     "typescript": "^5.9.3"
   }
 }
