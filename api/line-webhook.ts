@@ -3,7 +3,6 @@ import crypto from "crypto";
 
 export default async function handler(req, res) {
   try {
-    // --- Test line so Vercel confirms export works ---
     if (req.method !== "POST") {
       return res.status(405).send("Method Not Allowed");
     }
@@ -23,32 +22,51 @@ export default async function handler(req, res) {
 
     const replyToken = event.replyToken;
     const userId = event?.source?.userId || "anon";
-    const userText = event?.message?.text || "";
+    const userText = (event?.message?.text || "").trim();
+    if (!userText) return res.status(200).send("Empty user text");
 
-    // --- Call Dify workflow ---
-    const difyUrl = process.env.DIFY_WORKFLOW_URL || "";
+    // --- Dify Chat API: send full text as query ---
     const difyKey = process.env.DIFY_API_KEY || "";
-    if (!difyUrl || !difyKey) return res.status(500).send("Missing Dify credentials");
+    if (!difyKey) return res.status(500).send("Missing DIFY_API_KEY");
 
-    const difyResp = await fetch(difyUrl, {
+    const difyResp = await fetch("https://api.dify.ai/v1/chat-messages", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${difyKey}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${difyKey}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        inputs: { user_text: userText },
+        inputs: {},
+        query: userText,          // full user text
         response_mode: "blocking",
-        user: userId
-      })
-    }).then(r => r.json());
+        user: userId,
+      }),
+    });
 
-    const agent = difyResp?.data || difyResp || {};
-    const reply =
-      (agent.reply ?? agent?.outputs?.reply ?? agent?.conversation?.reply ?? "") + "";
+    const difyJson = await difyResp.json();
 
-    // --- Flex carousel mock ---
+    // Your app returns stringified JSON in `answer`
+    let parsed: any = {};
+    try {
+      parsed = typeof difyJson?.answer === "string" ? JSON.parse(difyJson.answer) : difyJson?.answer;
+    } catch {
+      parsed = { reply: difyJson?.answer };
+    }
+
+    // Per your rule: send exactly what Dify says; no fallback if empty.
+    const reply = (parsed?.reply ?? "").toString();
+
+    // --- Build LINE messages ---
+    const messages: any[] = [];
+    messages.push({ type: "text", text: reply });
+
+    // ALWAYS use your original static mock (ignore Dify actions to keep visuals unchanged)
     const contents = getMockCarousel();
+    messages.push({
+      type: "flex",
+      altText: "ข้อมูลผ้า",
+      contents,
+    });
 
     // --- Reply to LINE ---
     const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
@@ -57,16 +75,10 @@ export default async function handler(req, res) {
     const lineResp = await fetch("https://api.line.me/v2/bot/message/reply", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        replyToken,
-        messages: [
-          { type: "text", text: reply },
-          { type: "flex", altText: "ตัวอย่างแคโรเซลผ้า PN", contents }
-        ]
-      })
+      body: JSON.stringify({ replyToken, messages }),
     });
 
     if (!lineResp.ok) {
@@ -82,7 +94,7 @@ export default async function handler(req, res) {
   }
 }
 
-// --- Mock carousel generator ---
+// --- Your original, fixed carousel (unchanged) ---
 function getMockCarousel() {
   return {
     type: "carousel",
