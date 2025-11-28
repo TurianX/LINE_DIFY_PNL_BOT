@@ -13,7 +13,10 @@ export default async function handler(req, res) {
     const secret = process.env.LINE_CHANNEL_SECRET || "";
     if (!secret) return res.status(500).send("Missing LINE_CHANNEL_SECRET");
 
-    const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("base64");
+    const expected = crypto
+      .createHmac("sha256", secret)
+      .update(rawBody)
+      .digest("base64");
     if (expected !== sigHeader) return res.status(401).send("Invalid signature");
 
     // --- Parse event ---
@@ -37,7 +40,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         inputs: {},
-        query: userText,          // full user text
+        query: userText, // full user text
         response_mode: "blocking",
         user: userId,
       }),
@@ -45,32 +48,40 @@ export default async function handler(req, res) {
 
     const difyJson = await difyResp.json();
 
-    // Your app returns stringified JSON in `answer`
-    let parsed: any = {};
-    try {
-      parsed = typeof difyJson?.answer === "string" ? JSON.parse(difyJson.answer) : difyJson?.answer;
-    } catch {
-      parsed = { reply: difyJson?.answer };
-    }
+    // --- Parse Dify answer into meta + results (supports 1 or 2 JSON blocks) ---
+    const { meta, results } = parseDifyAnswer(difyJson.answer);
 
-    // Per your rule: send exactly what Dify says; no fallback if empty.
-    const reply = (parsed?.reply ?? "").toString();
+    // Text reply: prefer meta.reply, then clarify_question, then raw answer (string)
+    const reply = (
+      meta?.reply ??
+      meta?.clarify_question ??
+      (typeof difyJson.answer === "string" ? difyJson.answer : "")
+    ).toString();
 
     // --- Build LINE messages ---
     const messages: any[] = [];
+
+    // Always send text reply
     messages.push({ type: "text", text: reply });
 
-    // ALWAYS use your original static mock (ignore Dify actions to keep visuals unchanged)
-    const contents = getMockCarousel();
-    messages.push({
-      type: "flex",
-      altText: "ข้อมูลผ้า",
-      contents,
-    });
+    // Build dynamic carousel from results (1–3 items). If no results, no flex.
+    const contents =
+      Array.isArray(results) && results.length > 0
+        ? buildCarouselFromResults(results)
+        : null;
+
+    if (contents) {
+      messages.push({
+        type: "flex",
+        altText: "ข้อมูลผ้า",
+        contents,
+      });
+    }
 
     // --- Reply to LINE ---
     const accessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
-    if (!accessToken) return res.status(500).send("Missing LINE_CHANNEL_ACCESS_TOKEN");
+    if (!accessToken)
+      return res.status(500).send("Missing LINE_CHANNEL_ACCESS_TOKEN");
 
     const lineResp = await fetch("https://api.line.me/v2/bot/message/reply", {
       method: "POST",
@@ -94,85 +105,201 @@ export default async function handler(req, res) {
   }
 }
 
-// --- Your original, fixed carousel (unchanged) ---
-function getMockCarousel() {
+// ---- Types for parsed data ----
+type MetaJson = {
+  intent?: string;
+  reply?: string;
+  clarify_question?: string;
+  ui_format?: string;
+  reply_template_applied?: boolean;
+  needs_clarification?: boolean;
+  // other fields from meta are allowed but not required
+};
+
+type EnrichedItem = {
+  pageId: string;
+  url: string;
+  code: string;
+  pricePerYard: number;
+  typeOfFabric: string[];
+  characteristics: string;
+  colorName: string;
+  remainingYards: number;
+  // other fields are allowed; we just ignore them for display
+};
+
+// ---- Core parser: handle 1 or 2 JSON blocks in difyJson.answer ----
+function parseDifyAnswer(
+  answer: any
+): { meta: MetaJson | null; results: EnrichedItem[] } {
+  let meta: MetaJson | null = null;
+  let results: EnrichedItem[] = [];
+
+  // Case 1: answer is a string that may contain multiple JSON objects
+  if (typeof answer === "string") {
+    const jsonBlocks = splitJsonObjects(answer);
+
+    for (const block of jsonBlocks) {
+      try {
+        const obj = JSON.parse(block);
+
+        // If this block has results, treat as results container
+        if (Array.isArray(obj.results)) {
+          results = obj.results as EnrichedItem[];
+        }
+
+        // If this block looks like meta (intent/reply/clarify_question), treat as meta
+        if (obj.intent || obj.reply || obj.clarify_question) {
+          meta = obj as MetaJson;
+        }
+      } catch {
+        // ignore parse error on this block
+      }
+    }
+
+    // Fallback: if no meta yet and exactly one JSON block, treat that as meta
+    if (!meta && jsonBlocks.length === 1) {
+      try {
+        const obj = JSON.parse(jsonBlocks[0]);
+        meta = obj as MetaJson;
+      } catch {
+        // ignore
+      }
+    }
+
+    return { meta, results };
+  }
+
+  // Case 2: answer is already an object (single JSON)
+  if (answer && typeof answer === "object") {
+    const obj = answer as any;
+    if (Array.isArray(obj.results)) {
+      results = obj.results as EnrichedItem[];
+    }
+    meta = obj as MetaJson;
+    return { meta, results };
+  }
+
+  // Nothing usable
+  return { meta: null, results: [] };
+}
+
+// ---- Split a string that may contain multiple JSON objects concatenated ----
+function splitJsonObjects(str: string): string[] {
+  const blocks: string[] = [];
+  let depth = 0;
+  let start = -1;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+
+    if (ch === "{") {
+      if (depth === 0) {
+        start = i;
+      }
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        blocks.push(str.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  // If no blocks detected but looks like one JSON, push whole trimmed string
+  if (blocks.length === 0) {
+    const trimmed = str.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      blocks.push(trimmed);
+    }
+  }
+
+  return blocks;
+}
+
+// ---- Dynamic carousel builder (MUST) ----
+function buildCarouselFromResults(items: EnrichedItem[]) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+
+  // Limit to 3 items
+  const topItems = items.slice(0, 3);
+
   return {
     type: "carousel",
-    contents: [
-      {
+    contents: topItems.map((item) => {
+      const material =
+        Array.isArray(item.typeOfFabric) && item.typeOfFabric.length > 0
+          ? item.typeOfFabric.join(", ")
+          : "";
+
+      const priceText =
+        typeof item.pricePerYard === "number"
+          ? `THB ${item.pricePerYard}`
+          : "";
+
+      const qtyText =
+        typeof item.remainingYards === "number"
+          ? `${item.remainingYards} หลา`
+          : "";
+
+      // Prefer url; fallback to Notion page from pageId; final fallback generic
+      const notionUrl =
+        (item.url && item.url.length > 0
+          ? item.url
+          : item.pageId
+          ? `https://www.notion.so/${item.pageId.replace(/-/g, "")}`
+          : "https://www.notion.so") as string;
+
+      return {
         type: "bubble",
-        hero: {
-          type: "image",
-          url: "https://pnl-mockup-assets.vercel.app/images/fabric_mock_2.png",
-          size: "full",
-          aspectMode: "cover",
-          aspectRatio: "3:1"
-        },
         body: {
           type: "box",
           layout: "vertical",
+          spacing: "4px",
           contents: [
             {
-              type: "box",
-              layout: "vertical",
-              spacing: "2px",
-              contents: [
-                { type: "text", text: "Fabric Code : PNA0814" },
-                { type: "text", text: "สีผ้า : Stripe (ลาย)" },
-                { type: "text", text: "ราคาต่อหลา : THB 75.00" }
-              ]
-            }
-          ]
+              type: "text",
+              text: `จำนวนคงเหลือ: ${qtyText}`, // Quantity
+              wrap: true,
+            },
+            {
+              type: "text",
+              text: `Fabric Code: ${item.code ?? ""}`, // Fabric name/code
+              wrap: true,
+            },
+            {
+              type: "text",
+              text: `สีผ้า: ${item.colorName ?? ""}`, // Color
+              wrap: true,
+            },
+            {
+              type: "text",
+              text: `เนื้อผ้า: ${material}`, // Material
+              wrap: true,
+            },
+            {
+              type: "text",
+              text: `ราคาต่อหลา: ${priceText}`, // Price
+              wrap: true,
+            },
+          ],
         },
         footer: {
           type: "box",
           layout: "vertical",
-          paddingAll: "0px",
           contents: [
             {
               type: "button",
-              action: { type: "uri", label: "รายละเอียด", uri: "http://linecorp.com/" }
-            }
-          ]
-        }
-      },
-      {
-        type: "bubble",
-        hero: {
-          type: "image",
-          url: "https://pnl-mockup-assets.vercel.app/images/farbric_mock_1.png",
-          size: "full",
-          aspectMode: "cover",
-          aspectRatio: "3:1"
+              action: {
+                type: "uri",
+                label: "รายละเอียด",
+                uri: notionUrl, // each item’s Notion URL
+              },
+            },
+          ],
         },
-        body: {
-          type: "box",
-          layout: "vertical",
-          contents: [
-            {
-              type: "box",
-              layout: "vertical",
-              spacing: "2px",
-              contents: [
-                { type: "text", text: "Fabric Code : PNA0814" },
-                { type: "text", text: "สีผ้า : Stripe (ลาย)" },
-                { type: "text", text: "ราคาต่อหลา : THB 75.00" }
-              ]
-            }
-          ]
-        },
-        footer: {
-          type: "box",
-          layout: "vertical",
-          paddingAll: "0px",
-          contents: [
-            {
-              type: "button",
-              action: { type: "uri", label: "รายละเอียด", uri: "http://linecorp.com/" }
-            }
-          ]
-        }
-      }
-    ]
+      };
+    }),
   };
 }
