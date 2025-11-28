@@ -45,28 +45,35 @@ export default async function handler(req, res) {
 
         const difyJson = await difyResp.json();
 
-        // Your app returns stringified JSON in `answer`
-        let parsed: any = {};
-        try {
-            parsed = typeof difyJson?.answer === "string" ? JSON.parse(difyJson.answer) : difyJson?.answer;
-        } catch {
-            parsed = { reply: difyJson?.answer };
-        }
+        // Parse Dify answer (JSON string from your AI response engine)
+        let reply = "";
+        let enrichedItems: EnrichedItem[] = [];
 
-        // Per your rule: send exactly what Dify says; no fallback if empty.
-        const reply = (parsed?.reply ?? "").toString();
+        try {
+            // answer is a JSON string containing reply + results
+            const parsed = JSON.parse(difyJson.answer);
+
+            // 1) Plain text to show in LINE
+            reply = parsed.reply || "";
+
+            // 2) Enriched items for carousel
+            enrichedItems = parsed.results || [];
+        } catch (e) {
+            // If parsing fails, fall back to plain text answer
+            reply = difyJson.answer || "";
+            enrichedItems = [];
+        }
 
         // --- Build LINE messages ---
         const messages: any[] = [];
-        messages.push({ type: "text", text: reply });
 
-        // enriched results from Dify
-        const enriched = parsed?.results || parsed?.data?.results || [];
+        // Text message (never JSON)
+        if (reply) {
+            messages.push({ type: "text", text: reply });
+        }
 
-        // Build dynamic carousel (1–3 items)
-        const contents = buildCarouselFromResults(enriched);
-
-        // Only send flex if at least 1 item exists
+        // Flex carousel built from enriched items (1–3)
+        const contents = buildCarouselFromResults(enrichedItems);
         if (contents) {
             messages.push({
                 type: "flex",
@@ -74,6 +81,7 @@ export default async function handler(req, res) {
                 contents,
             });
         }
+
 
 
         // --- Reply to LINE ---
@@ -103,98 +111,98 @@ export default async function handler(req, res) {
 }
 
 type EnrichedItem = {
-  pageId: string;
-  url: string;
-  code: string;
-  pricePerYard: number;
-  typeOfFabric: string[];
-  characteristics: string;
-  colorName: string;
-  remainingYards: number;
+    pageId: string;
+    url: string;
+    code: string;
+    pricePerYard: number;
+    typeOfFabric: string[];
+    characteristics: string;
+    colorName: string;
+    remainingYards: number;
 };
 
 function buildCarouselFromResults(items: EnrichedItem[]) {
-  if (!items || items.length === 0) return null;
+    if (!items || items.length === 0) return null;
 
-  const topItems = items.slice(0, 3);
+    const topItems = items.slice(0, 3);
 
-  return {
-    type: "carousel",
-    contents: topItems.map((item) => {
-      const material =
-        Array.isArray(item.typeOfFabric) && item.typeOfFabric.length > 0
-          ? item.typeOfFabric.join(", ")
-          : "";
+    return {
+        type: "carousel",
+        contents: topItems.map((item) => {
+            const material =
+                Array.isArray(item.typeOfFabric) && item.typeOfFabric.length > 0
+                    ? item.typeOfFabric.join(", ")
+                    : "";
 
-      const priceText =
-        typeof item.pricePerYard === "number"
-          ? `THB ${item.pricePerYard}`
-          : "";
+            const priceText =
+                typeof item.pricePerYard === "number"
+                    ? `THB ${item.pricePerYard}`
+                    : "";
 
-      const qtyText =
-        typeof item.remainingYards === "number"
-          ? `${item.remainingYards} หลา`
-          : "";
+            const qtyText =
+                typeof item.remainingYards === "number"
+                    ? `${item.remainingYards} หลา`
+                    : "";
 
-      // If url exists, use it. If not, build from pageId.
-      const notionUrl =
-        item.url && item.url.length > 0
-          ? item.url
-          : item.pageId
-          ? `https://www.notion.so/${item.pageId.replace(/-/g, "")}`
-          : "https://www.notion.so";
+            // If url exists, use it. If not, build from pageId.
+            const notionUrl =
+                item.url && item.url.length > 0
+                    ? item.url
+                    : item.pageId
+                        ? `https://www.notion.so/${item.pageId.replace(/-/g, "")}`
+                        : "https://www.notion.so";
 
-      return {
-        type: "bubble",
-        body: {
-          type: "box",
-          layout: "vertical",
-          spacing: "4px",
-          contents: [
-            {
-              type: "text",
-              text: `จำนวนคงเหลือ: ${qtyText}`,
-              wrap: true,
-            },
-            {
-              type: "text",
-              text: `Fabric Code: ${item.code ?? ""}`,
-              wrap: true,
-            },
-            {
-              type: "text",
-              text: `สีผ้า: ${item.colorName ?? ""}`,
-              wrap: true,
-            },
-            {
-              type: "text",
-              text: `เนื้อผ้า: ${material}`,
-              wrap: true,
-            },
-            {
-              type: "text",
-              text: `ราคาต่อหลา: ${priceText}`,
-              wrap: true,
-            },
-          ],
-        },
-        footer: {
-          type: "box",
-          layout: "vertical",
-          contents: [
-            {
-              type: "button",
-              action: {
-                type: "uri",
-                label: "รายละเอียด",
-                uri: notionUrl,
-              },
-            },
-          ],
-        },
-      };
-    }),
-  };
+            return {
+                type: "bubble",
+                body: {
+                    type: "box",
+                    layout: "vertical",
+                    spacing: "4px",
+                    contents: [
+                        {
+                            type: "text",
+                            text: `จำนวนคงเหลือ: ${qtyText}`,
+                            wrap: true,
+                        },
+                        {
+                            type: "text",
+                            text: `Fabric Code: ${item.code ?? ""}`,
+                            wrap: true,
+                        },
+                        {
+                            type: "text",
+                            text: `สีผ้า: ${item.colorName ?? ""}`,
+                            wrap: true,
+                        },
+                        {
+                            type: "text",
+                            text: `เนื้อผ้า: ${material}`,
+                            wrap: true,
+                        },
+                        {
+                            type: "text",
+                            text: `ราคาต่อหลา: ${priceText}`,
+                            wrap: true,
+                        },
+                    ],
+                },
+                footer: {
+                    type: "box",
+                    layout: "vertical",
+                    contents: [
+                        {
+                            type: "button",
+                            action: {
+                                type: "uri",
+                                label: "รายละเอียด",
+                                uri: notionUrl,
+                            },
+                        },
+                    ],
+                },
+            };
+        }),
+    };
 }
 
 
