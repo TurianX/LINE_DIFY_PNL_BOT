@@ -125,6 +125,7 @@ type EnrichedItem = {
   characteristics: string;
   colorName: string;
   remainingYards: number;
+  fabricSampleImageUrl?: string;
   // other fields are allowed; we just ignore them for display
 };
 
@@ -218,7 +219,6 @@ function splitJsonObjects(str: string): string[] {
   return blocks;
 }
 
-// ---- Dynamic carousel builder (MUST) ----
 function buildCarouselFromResults(items: EnrichedItem[]) {
   if (!Array.isArray(items) || items.length === 0) return null;
 
@@ -251,7 +251,8 @@ function buildCarouselFromResults(items: EnrichedItem[]) {
           ? `https://www.notion.so/${item.pageId.replace(/-/g, "")}`
           : "https://www.notion.so") as string;
 
-      return {
+      // Build bubble
+      const bubble: any = {
         type: "bubble",
         body: {
           type: "box",
@@ -265,7 +266,7 @@ function buildCarouselFromResults(items: EnrichedItem[]) {
             },
             {
               type: "text",
-              text: `Fabric Code: ${item.code ?? ""}`, // Fabric name/code
+              text: `Fabric Code: ${item.code ?? ""}`, // Fabric code
               wrap: true,
             },
             {
@@ -300,6 +301,19 @@ function buildCarouselFromResults(items: EnrichedItem[]) {
           ],
         },
       };
+
+      // 🔥 Add hero image if we have fabricSampleImageUrl
+      if (item.fabricSampleImageUrl) {
+        bubble.hero = {
+          type: "image",
+          url: item.fabricSampleImageUrl,
+          size: "full",
+          aspectRatio: "1:1",
+          aspectMode: "cover",
+        };
+      }
+
+      return bubble;
     }),
   };
 }
