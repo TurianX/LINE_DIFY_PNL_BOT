@@ -308,7 +308,7 @@ function buildCarouselFromResults(items: EnrichedItem[]) {
           type: "image",
           url: item.fabricSampleImageUrl,
           size: "full",
-          aspectRatio: "1:1",
+          aspectRatio: "3:1",
           aspectMode: "cover",
         };
       }
