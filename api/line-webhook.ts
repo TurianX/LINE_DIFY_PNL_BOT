@@ -223,7 +223,7 @@ function buildCarouselFromResults(items: EnrichedItem[]) {
   if (!Array.isArray(items) || items.length === 0) return null;
 
   // Limit to 3 items
-  const topItems = items.slice(0, 12);
+  const topItems = items.slice(0, 50);
 
   return {
     type: "carousel",
